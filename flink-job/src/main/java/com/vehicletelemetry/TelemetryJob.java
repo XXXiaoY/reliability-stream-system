@@ -1,16 +1,20 @@
 package com.vehicletelemetry;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.vehicletelemetry.model.TelemetryEvent;
 import com.vehicletelemetry.serde.TelemetryEventDeserializer;
 import com.vehicletelemetry.sink.PostgresSink;
 import org.apache.flink.api.common.eventtime.SerializableTimestampAssigner;
 import org.apache.flink.api.common.eventtime.WatermarkStrategy;
+import org.apache.flink.api.common.serialization.SimpleStringSchema;
 import org.apache.flink.api.common.state.ValueState;
 import org.apache.flink.api.common.state.ValueStateDescriptor;
 import org.apache.flink.api.common.state.MapState;
 import org.apache.flink.api.common.state.MapStateDescriptor;
 import org.apache.flink.api.common.typeinfo.Types;
 import org.apache.flink.configuration.Configuration;
+import org.apache.flink.connector.kafka.sink.KafkaRecordSerializationSchema;
+import org.apache.flink.connector.kafka.sink.KafkaSink;
 import org.apache.flink.connector.kafka.source.KafkaSource;
 import org.apache.flink.connector.kafka.source.enumerator.initializer.OffsetsInitializer;
 import org.apache.flink.metrics.Counter;
@@ -32,6 +36,9 @@ public class TelemetryJob {
     // Side output for duplicate events
     private static final OutputTag<TelemetryEvent> DUPLICATE_EVENTS =
             new OutputTag<TelemetryEvent>("duplicate-events") {};
+
+    private static final OutputTag<TelemetryEvent> DLQ_EVENTS =
+            new OutputTag<TelemetryEvent>("dlq-events") {};
 
     public static void main(String[] args) throws Exception {
         final StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
@@ -78,6 +85,23 @@ public class TelemetryJob {
                         e.getEventId().substring(0, 8), e.getVehicleId(), e.getEventTime()))
                 .print();
 
+        // DLQ: write unparseable events to dead letter topic
+        KafkaSink<String> dlqSink = KafkaSink.<String>builder()
+                .setBootstrapServers("kafka:29092")
+                .setRecordSerializer(KafkaRecordSerializationSchema.builder()
+                        .setTopic("vehicle-telemetry-dlq")
+                        .setValueSerializationSchema(new SimpleStringSchema())
+                        .build())
+                .build();
+
+        processed.getSideOutput(DLQ_EVENTS)
+                .map(e -> {
+                    ObjectMapper om = new ObjectMapper();
+                    return om.writeValueAsString(e);
+                })
+                .sinkTo(dlqSink)
+                .name("DLQ Kafka Sink");
+
         // Duplicate events side output
         processed.getSideOutput(DUPLICATE_EVENTS)
                 .map(e -> String.format("[DUP] %s vehicle=%s time=%d",
@@ -104,6 +128,7 @@ public class TelemetryJob {
         private transient Counter processedCounter;
         private transient Counter duplicateCounter;
         private transient Counter lateCounter;
+        private transient Counter dlqCounter;
 
         // How long to keep event IDs for dedup (5 minutes)
         private static final long DEDUP_TTL_MS = 5 * 60 * 1000;
@@ -125,6 +150,8 @@ public class TelemetryJob {
                     .addGroup("telemetry").counter("events_duplicate");
             lateCounter = getRuntimeContext().getMetricGroup()
                     .addGroup("telemetry").counter("events_late");
+            dlqCounter = getRuntimeContext().getMetricGroup()
+                    .addGroup("telemetry").counter("events_dlq");
         }
 
         @Override
@@ -138,6 +165,13 @@ public class TelemetryJob {
             }
 
             long watermark = ctx.timerService().currentWatermark();
+
+            // --- Check parse error (DLQ) ---
+            if ("PARSE_ERROR".equals(event.getEventType())) {
+                ctx.output(DLQ_EVENTS, event);
+                dlqCounter.inc();
+                return;
+            }
 
             // --- Check duplicate ---
             if (seenEventIds.contains(event.getEventId())) {

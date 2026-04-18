@@ -31,6 +31,7 @@ FAULT_CONFIG = {
     "late_event_rate": 0.03,        # 3% of events get event_time pushed back 60-120s
     "late_event_min_sec": 60,
     "late_event_max_sec": 120,
+    "malformed_rate": 0.02,         # 2% of events are malformed JSON
 }
 
 # Stats
@@ -39,6 +40,7 @@ stats = {
     "duplicates_injected": 0,
     "out_of_order_injected": 0,
     "late_events_injected": 0,
+    "malformed_injected": 0,
 }
 
 
@@ -108,6 +110,15 @@ def main():
             event = create_event(vehicle_id)
             count += 1
 
+            # --- Fault: Malformed event ---
+            if random.random() < FAULT_CONFIG["malformed_rate"]:
+                malformed = '{"broken json": ' + str(random.randint(0, 999))
+                producer.send(TOPIC, key="malformed", value=malformed)
+                stats["total_sent"] += 1
+                stats["malformed_injected"] += 1
+                print(f"[{stats['total_sent']}] [MALFORMED] sent broken JSON")
+                continue
+
             # --- Fault: Late event (mutate event_time to the past) ---
             if random.random() < FAULT_CONFIG["late_event_rate"]:
                 event = inject_late_event(event)
@@ -149,6 +160,7 @@ def main():
         print(f"Duplicates injected:     {stats['duplicates_injected']}")
         print(f"Out-of-order injected:   {stats['out_of_order_injected']}")
         print(f"Late events injected:    {stats['late_events_injected']}")
+        print(f"Malformed injected:      {stats['malformed_injected']}")
 
 
 if __name__ == "__main__":
