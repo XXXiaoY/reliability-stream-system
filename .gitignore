@@ -1,0 +1,14 @@
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Java / Maven
+target/
+
+# IDE
+.idea/
+*.iml
