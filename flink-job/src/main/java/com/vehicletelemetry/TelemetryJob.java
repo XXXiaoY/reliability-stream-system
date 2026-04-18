@@ -13,6 +13,7 @@ import org.apache.flink.api.common.typeinfo.Types;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.connector.kafka.source.KafkaSource;
 import org.apache.flink.connector.kafka.source.enumerator.initializer.OffsetsInitializer;
+import org.apache.flink.metrics.Counter;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.datastream.SingleOutputStreamOperator;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
@@ -100,6 +101,10 @@ public class TelemetryJob {
         // Track counts per vehicle for logging
         private transient ValueState<long[]> counters;
 
+        private transient Counter processedCounter;
+        private transient Counter duplicateCounter;
+        private transient Counter lateCounter;
+
         // How long to keep event IDs for dedup (5 minutes)
         private static final long DEDUP_TTL_MS = 5 * 60 * 1000;
 
@@ -113,6 +118,13 @@ public class TelemetryJob {
 
             counters = getRuntimeContext().getState(
                     new ValueStateDescriptor<>("counters", long[].class));
+
+            processedCounter = getRuntimeContext().getMetricGroup()
+                    .addGroup("telemetry").counter("events_processed");
+            duplicateCounter = getRuntimeContext().getMetricGroup()
+                    .addGroup("telemetry").counter("events_duplicate");
+            lateCounter = getRuntimeContext().getMetricGroup()
+                    .addGroup("telemetry").counter("events_late");
         }
 
         @Override
@@ -132,6 +144,7 @@ public class TelemetryJob {
                 c[1]++;
                 counters.update(c);
                 ctx.output(DUPLICATE_EVENTS, event);
+                duplicateCounter.inc();
                 return;
             }
 
@@ -145,6 +158,7 @@ public class TelemetryJob {
                 c[2]++;
                 counters.update(c);
                 ctx.output(LATE_EVENTS, event);
+                lateCounter.inc();
                 return;
             }
 
@@ -152,6 +166,7 @@ public class TelemetryJob {
             c[0]++;
             counters.update(c);
             out.collect(event);
+            processedCounter.inc();
 
             // Log stats every 100 events
             if ((c[0] + c[1] + c[2]) % 100 == 0) {
