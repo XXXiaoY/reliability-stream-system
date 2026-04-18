@@ -1,4 +1,7 @@
+com/vehicletelemetry/TelemetryJob$DeduplicateAndDetectLate.class
+com/vehicletelemetry/TelemetryJob$2.class
+com/vehicletelemetry/model/LocationPayload.class
 com/vehicletelemetry/TelemetryJob.class
 com/vehicletelemetry/model/TelemetryEvent.class
-com/vehicletelemetry/model/LocationPayload.class
+com/vehicletelemetry/TelemetryJob$1.class
 com/vehicletelemetry/serde/TelemetryEventDeserializer.class
