@@ -1,0 +1,4 @@
+com/vehicletelemetry/TelemetryJob.class
+com/vehicletelemetry/model/TelemetryEvent.class
+com/vehicletelemetry/model/LocationPayload.class
+com/vehicletelemetry/serde/TelemetryEventDeserializer.class

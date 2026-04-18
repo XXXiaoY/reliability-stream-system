@@ -1,0 +1,4 @@
+/Users/yangxiao/reliability-stream-system/flink-job/src/main/java/com/vehicletelemetry/model/LocationPayload.java
+/Users/yangxiao/reliability-stream-system/flink-job/src/main/java/com/vehicletelemetry/model/TelemetryEvent.java
+/Users/yangxiao/reliability-stream-system/flink-job/src/main/java/com/vehicletelemetry/TelemetryJob.java
+/Users/yangxiao/reliability-stream-system/flink-job/src/main/java/com/vehicletelemetry/serde/TelemetryEventDeserializer.java
