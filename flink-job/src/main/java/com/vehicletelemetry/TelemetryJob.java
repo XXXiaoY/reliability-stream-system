@@ -2,6 +2,7 @@ package com.vehicletelemetry;
 
 import com.vehicletelemetry.model.TelemetryEvent;
 import com.vehicletelemetry.serde.TelemetryEventDeserializer;
+import com.vehicletelemetry.sink.PostgresSink;
 import org.apache.flink.api.common.eventtime.SerializableTimestampAssigner;
 import org.apache.flink.api.common.eventtime.WatermarkStrategy;
 import org.apache.flink.api.common.state.ValueState;
@@ -65,6 +66,10 @@ public class TelemetryJob {
         processed.map(e -> String.format("[OK] %s vehicle=%s time=%d",
                         e.getEventId().substring(0, 8), e.getVehicleId(), e.getEventTime()))
                 .print();
+
+        // Write valid events to PostgreSQL (idempotent upsert)
+        processed.addSink(PostgresSink.create())
+                .name("PostgreSQL Sink");
 
         // Late events side output
         processed.getSideOutput(LATE_EVENTS)
