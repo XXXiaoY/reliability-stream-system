@@ -1,96 +1,81 @@
 # Reliability Stream System
 
-A reliability-focused streaming data platform for connected vehicle telemetry.
+A local stream processing system for connected vehicle telemetry.
 
-This project simulates a real-time fleet telemetry pipeline and implements the failure-handling logic that production event streams need: out-of-order events, late arrivals, duplicate retries, malformed payloads, stateful recovery, observability, and replay-safe persistence.
+The project uses a Python simulator to publish telemetry events to Kafka, processes the stream with Apache Flink, stores valid events in PostgreSQL, and exposes Flink metrics through Prometheus/Grafana.
 
-The goal is not only to move messages from Kafka to a database. The goal is to keep downstream state correct when the input stream is imperfect.
+The Flink job handles common stream reliability cases:
 
-## Highlights
-
-- **11.8K events/sec producer-side throughput** on a local single-machine Docker setup.
-- **50,000 / 50,000 events persisted** in the throughput benchmark.
-- **0 duplicate event IDs persisted** after a 5x duplicate injection test.
-- **2s TaskManager crash recovery observation** before new data resumed landing in PostgreSQL.
-- **Stateful Flink processing** with event-time watermarks, keyed deduplication, side outputs, and checkpointing.
-- **Operational testbed** with Kafka, Flink, PostgreSQL, Prometheus, and Grafana running through Docker Compose.
-
-## Why This Project Exists
-
-Connected vehicles often send telemetry over unstable networks. Vehicles can disconnect, buffer events locally, retry sends, replay old messages, or reconnect with bursty traffic. A naive consumer can store duplicates, process stale state, crash on malformed data, or lose visibility into reliability failures.
-
-This project models those conditions and implements a stream processor that handles them explicitly.
-
-Core reliability problems covered:
-
-- out-of-order event delivery
-- late events based on event time
-- duplicate event retries
-- malformed JSON payloads
-- sink idempotency
+- event-time processing with watermarks
+- out-of-order events
+- late events
+- duplicate `event_id` suppression
+- malformed event routing to a Kafka DLQ
+- PostgreSQL idempotent writes
 - TaskManager restart recovery
-- metrics for processed, duplicate, late, and DLQ events
 
 ## Architecture
 
 ```mermaid
 flowchart LR
-    A[Fleet Simulator<br/>Python fault injector] -->|vehicle-telemetry| B[Kafka]
-    B --> C[Flink Job<br/>Java 17 / Flink 1.18]
-    C -->|valid deduplicated events| D[(PostgreSQL)]
-    C -->|malformed events| E[Kafka DLQ<br/>vehicle-telemetry-dlq]
+    A[Python fleet simulator] -->|vehicle-telemetry| B[Kafka]
+    B --> C[Flink job]
+    C -->|valid events| D[(PostgreSQL)]
+    C -->|malformed events| E[Kafka DLQ]
     C -->|metrics| F[Prometheus]
     F --> G[Grafana]
-
-    subgraph Flink Processing
-        C1[JSON deserialization]
-        C2[Event-time watermarks]
-        C3[Keyed MapState dedup]
-        C4[Late-event side output]
-        C5[JDBC upsert sink]
-    end
 ```
+
+## Components
+
+| Component | Description |
+| --- | --- |
+| `fleet-simulator` | Python producer that generates telemetry events and injects faults |
+| `flink-job` | Java/Flink streaming job |
+| `infra` | Docker Compose setup for Kafka, Flink, PostgreSQL, Prometheus, and Grafana |
+| `scripts` | Startup, shutdown, and chaos test scripts |
+| `docs` | Design notes |
 
 ## Tech Stack
 
-| Layer | Technology |
-| --- | --- |
-| Stream processing | Apache Flink 1.18.1, Java 17 |
-| Message broker | Kafka, ZooKeeper, Confluent Platform images |
-| Storage | PostgreSQL 16 |
-| Simulator | Python, kafka-python |
-| Observability | Prometheus, Grafana, Flink Prometheus reporter |
-| Local orchestration | Docker Compose |
-| Build | Maven, Maven Shade Plugin |
+- Java 17
+- Apache Flink 1.18.1
+- Kafka
+- PostgreSQL 16
+- Python 3
+- Docker Compose
+- Prometheus
+- Grafana
+- Maven
 
 ## Repository Layout
 
 ```text
 .
 ├── docs/
-│   └── design.md                  # Design notes and phase plan
+│   └── design.md
 ├── fleet-simulator/
 │   ├── requirements.txt
-│   └── src/generator.py           # Telemetry generator with fault injection
+│   └── src/generator.py
 ├── flink-job/
 │   ├── pom.xml
 │   └── src/main/java/com/vehicletelemetry/
-│       ├── TelemetryJob.java      # Flink pipeline, watermarks, state, metrics
+│       ├── TelemetryJob.java
 │       ├── model/TelemetryEvent.java
 │       ├── serde/TelemetryEventDeserializer.java
-│       └── sink/PostgresSink.java # Idempotent PostgreSQL sink
+│       └── sink/PostgresSink.java
 ├── infra/
-│   ├── docker-compose.yml         # Kafka, Flink, PostgreSQL, Prometheus, Grafana
+│   ├── docker-compose.yml
 │   └── prometheus/prometheus.yml
 └── scripts/
-    ├── start.sh                   # Start local infrastructure and Kafka topics
+    ├── start.sh
     ├── stop.sh
-    └── chaos-test.sh              # End-to-end reliability validation
+    └── chaos-test.sh
 ```
 
-## Event Model
+## Event Format
 
-Each telemetry message uses a common envelope:
+Example telemetry event:
 
 ```json
 {
@@ -109,93 +94,40 @@ Each telemetry message uses a common envelope:
 }
 ```
 
-Supported simulated event types:
+Simulated event types:
 
 - `LOCATION`
 - `BATTERY`
 - `SPEED`
-- malformed JSON for DLQ validation
 
-## Reliability Design
+Malformed JSON messages are also generated for DLQ testing.
 
-### Event-Time Processing
+## Flink Processing
 
-The Flink job assigns timestamps from `event_time`, not processing time. It uses bounded out-of-orderness watermarks with idle-source detection so temporarily quiet partitions do not block progress.
+The Flink job reads from the `vehicle-telemetry` Kafka topic and applies:
 
-Current settings:
+- timestamp assignment from `event_time`
+- bounded out-of-orderness watermarking
+- keyed deduplication by `vehicle_id` and `event_id`
+- late-event side output
+- malformed-event side output to DLQ
+- JDBC sink writes to PostgreSQL
+- custom counters for Prometheus
 
-- watermark disorder tolerance: `30s`
-- source idleness: `10s`
-- late-event threshold after watermark: `45s`
+Current processing settings:
 
-### Deduplication
+| Setting | Value |
+| --- | --- |
+| Watermark out-of-orderness | `30s` |
+| Source idleness | `10s` |
+| Late-event threshold | `45s` behind watermark |
+| Dedup state retention | `5 minutes` |
+| Checkpoint interval | `30s` |
 
-Events are keyed by `vehicle_id`, and recently seen `event_id` values are tracked in Flink `MapState`.
-
-Duplicate behavior:
-
-- first event with an `event_id` is processed
-- later events with the same `event_id` are routed to duplicate side output
-- duplicate counter is exported through Flink metrics
-- dedup state is cleaned with processing-time timers
-
-Current dedup retention:
-
-- `5 minutes`
-
-### Idempotent Sink
-
-PostgreSQL writes use an idempotent insert:
+PostgreSQL writes use:
 
 ```sql
-INSERT INTO telemetry_events (...)
-VALUES (...)
-ON CONFLICT (event_id) DO NOTHING;
-```
-
-This gives the sink an additional correctness boundary in case an event is replayed or the job retries a write.
-
-### Dead Letter Handling
-
-Malformed JSON is converted into a poison-pill `TelemetryEvent` with `event_type = "PARSE_ERROR"` instead of crashing the Flink job. These records are routed to the Kafka DLQ topic:
-
-```text
-vehicle-telemetry-dlq
-```
-
-### Recovery
-
-The local Flink cluster is configured with checkpointing and RocksDB state backend in Docker Compose:
-
-```text
-execution.checkpointing.interval: 30s
-state.backend: rocksdb
-```
-
-The chaos test restarts the TaskManager container and verifies that new events continue to land in PostgreSQL after recovery.
-
-## Benchmarks
-
-These numbers were measured on a local single-machine Docker setup and are intended as a development baseline, not a cloud-scale claim.
-
-| Test | Result |
-| --- | --- |
-| Producer throughput | `50,000` events in `4.2s`, about `11,834 events/sec` |
-| Persistence correctness | `50,000 / 50,000` events landed in PostgreSQL |
-| Duplicate injection | `1,000` unique events sent `5x` each, `0` duplicate event IDs in DB |
-| TaskManager restart recovery | New PostgreSQL row observed after `2s` |
-| Chaos suite | `7/7` reliability checks passed in the latest recorded run |
-
-Sample benchmark output:
-
-```text
-Produced 50000 events in 4.2s = 11834 events/sec
-
-Total rows: 51000
-Duplicate event_ids in DB: 0
-
-Before crash: 51018
-Recovery: new data at 2s (rows: 51018 -> 51019)
+ON CONFLICT (event_id) DO NOTHING
 ```
 
 ## Running Locally
@@ -216,21 +148,25 @@ python3 -m pip install -r requirements.txt
 
 ### Start Infrastructure
 
+From the repository root:
+
 ```bash
 ./scripts/start.sh
 ```
 
-This starts:
+Local services:
 
-- Kafka on `localhost:9092`
-- Flink UI on `http://localhost:8081`
-- PostgreSQL on `localhost:5432`
-- Prometheus on `http://localhost:9090`
-- Grafana on `http://localhost:3000`
+| Service | URL / Port |
+| --- | --- |
+| Kafka | `localhost:9092` |
+| Flink UI | `http://localhost:8081` |
+| PostgreSQL | `localhost:5432` |
+| Prometheus | `http://localhost:9090` |
+| Grafana | `http://localhost:3000` |
 
 ### Create PostgreSQL Table
 
-If the database is empty, create the sink table:
+If the table does not exist yet:
 
 ```bash
 docker exec -i postgres psql -U telemetry -d telemetry <<'SQL'
@@ -253,8 +189,6 @@ mvn -f flink-job/pom.xml clean package
 
 ### Submit the Flink Job
 
-Run from the repository root:
-
 ```bash
 docker cp flink-job/target/flink-job-1.0-SNAPSHOT.jar flink-jobmanager:/tmp/
 docker exec flink-jobmanager flink run -d /tmp/flink-job-1.0-SNAPSHOT.jar
@@ -263,33 +197,54 @@ docker exec flink-jobmanager flink run -d /tmp/flink-job-1.0-SNAPSHOT.jar
 ### Run the Simulator
 
 ```bash
-cd fleet-simulator && python3 src/generator.py
+cd fleet-simulator
+python3 src/generator.py
 ```
 
-The generator injects:
+Default fault injection settings:
 
-- `5%` duplicate events
-- `10%` out-of-order events
-- `3%` late events
-- `2%` malformed events
+| Fault | Rate |
+| --- | --- |
+| Duplicate events | `5%` |
+| Out-of-order events | `10%` |
+| Late events | `3%` |
+| Malformed events | `2%` |
 
-### Run Chaos Tests
+### Stop Infrastructure
+
+```bash
+./scripts/stop.sh
+```
+
+## Validation
+
+Run the chaos test suite:
 
 ```bash
 ./scripts/chaos-test.sh
 ```
 
-The test suite validates:
+The script checks:
 
 - normal event processing
 - duplicate suppression
-- duplicate metrics
-- malformed event DLQ routing
-- DLQ metrics
-- TaskManager restart recovery
+- duplicate counter export
+- malformed event routing to DLQ
+- DLQ counter export
+- processing after TaskManager restart
 - no duplicate rows after recovery
 
-## Observability
+Recent local benchmark results:
+
+| Test | Result |
+| --- | --- |
+| Producer throughput | `50,000` events in `4.2s`, about `11,834 events/sec` |
+| Persistence count | `50,000 / 50,000` events stored |
+| Duplicate injection | `1,000` unique events sent `5x`; `0` duplicate event IDs in PostgreSQL |
+| TaskManager restart | New data observed after `2s` |
+| Chaos suite | `7/7` checks passed |
+
+## Metrics
 
 The Flink job exports custom counters under the `telemetry` metric group:
 
@@ -298,9 +253,9 @@ The Flink job exports custom counters under the `telemetry` metric group:
 - `events_late`
 - `events_dlq`
 
-Prometheus scrapes the Flink JobManager and TaskManager through the Flink Prometheus reporter on port `9249`.
+Prometheus scrapes Flink on port `9249`.
 
-Example Prometheus metric names include:
+Example metric names:
 
 ```text
 flink_taskmanager_job_task_operator_telemetry_events_processed
@@ -309,40 +264,9 @@ flink_taskmanager_job_task_operator_telemetry_events_late
 flink_taskmanager_job_task_operator_telemetry_events_dlq
 ```
 
-## Engineering Tradeoffs
+## Notes
 
-This project is intentionally scoped as a local reliability lab rather than a fully managed production deployment.
-
-Important choices:
-
-- **At-least-once processing plus idempotent sink** was chosen over claiming full end-to-end exactly-once semantics.
-- **PostgreSQL** is used as an inspectable correctness sink, not as the only possible production sink.
-- **MapState deduplication** keeps the implementation explicit and testable for interview discussion.
-- **Synthetic fault injection** makes reliability behavior reproducible without depending on external services.
-- **Docker Compose** keeps the project runnable on one machine for review and demonstration.
-
-## What I Would Improve Next
-
-- Add Testcontainers-based integration tests for the Flink job.
-- Persist benchmark results as versioned reports under `docs/benchmarks/`.
-- Add a Grafana dashboard JSON export to the repository.
-- Move runtime configuration into environment variables.
-- Add schema registry compatibility tests for event evolution.
-- Add savepoint-based upgrade and rollback workflows.
-
-## Interview Discussion Points
-
-This project is useful for discussing:
-
-- event time vs processing time
-- watermark tuning and late data semantics
-- state TTL and memory growth
-- exactly-once vs idempotent at-least-once design
-- Kafka partitioning by entity key
-- Flink checkpointing and restart behavior
-- operational metrics for data quality
-- failure-oriented system validation
-
-## Status
-
-The current implementation includes the full local path from telemetry generation to Kafka, Flink processing, PostgreSQL persistence, DLQ routing, Prometheus metrics, and chaos validation.
+- The local setup uses single-node Kafka and local Docker containers.
+- The benchmark numbers are local development measurements.
+- The Flink job uses at-least-once processing with idempotent PostgreSQL writes.
+- The PostgreSQL sink is intended for validation and inspection in this local setup.
