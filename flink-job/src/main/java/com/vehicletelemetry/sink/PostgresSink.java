@@ -1,5 +1,6 @@
 package com.vehicletelemetry.sink;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.vehicletelemetry.model.TelemetryEvent;
 import org.apache.flink.connector.jdbc.JdbcConnectionOptions;
 import org.apache.flink.connector.jdbc.JdbcExecutionOptions;
@@ -8,11 +9,12 @@ import org.apache.flink.streaming.api.functions.sink.SinkFunction;
 
 public class PostgresSink {
 
+    private static final ObjectMapper MAPPER = new ObjectMapper();
+
     private static final String UPSERT_SQL =
             "INSERT INTO telemetry_events " +
-            "(event_id, vehicle_id, event_time, ingest_time, event_type, " +
-            " latitude, longitude, altitude, heading) " +
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) " +
+            "(event_id, vehicle_id, event_time, ingest_time, event_type, payload_json) " +
+            "VALUES (?, ?, ?, ?, ?, ?::jsonb) " +
             "ON CONFLICT (event_id) DO NOTHING";
 
     public static SinkFunction<TelemetryEvent> create() {
@@ -24,10 +26,11 @@ public class PostgresSink {
                     ps.setLong(3, event.getEventTime());
                     ps.setLong(4, event.getIngestTime());
                     ps.setString(5, event.getEventType());
-                    ps.setDouble(6, event.getPayload().getLatitude());
-                    ps.setDouble(7, event.getPayload().getLongitude());
-                    ps.setDouble(8, event.getPayload().getAltitude());
-                    ps.setDouble(9, event.getPayload().getHeading());
+                    try {
+                        ps.setString(6, MAPPER.writeValueAsString(event.getPayload()));
+                    } catch (Exception e) {
+                        ps.setString(6, "{}");
+                    }
                 },
                 JdbcExecutionOptions.builder()
                         .withBatchSize(50)

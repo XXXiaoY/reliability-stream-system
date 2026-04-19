@@ -67,6 +67,40 @@ def create_event(vehicle_id: str) -> dict:
     }
 
 
+def create_battery_event(vehicle_id: str) -> dict:
+    now_ms = int(time.time() * 1000)
+    return {
+        "event_id": str(uuid.uuid4()),
+        "vehicle_id": vehicle_id,
+        "event_time": now_ms,
+        "ingest_time": now_ms,
+        "schema_version": "1.1",
+        "event_type": "BATTERY",
+        "payload": {
+            "soc_percent": round(random.uniform(10, 100), 1),
+            "voltage": round(random.uniform(350, 420), 1),
+            "temperature_c": round(random.uniform(15, 45), 1),
+            "charging": random.choice([True, False]),
+        },
+    }
+
+
+def create_speed_event(vehicle_id: str) -> dict:
+    now_ms = int(time.time() * 1000)
+    return {
+        "event_id": str(uuid.uuid4()),
+        "vehicle_id": vehicle_id,
+        "event_time": now_ms,
+        "ingest_time": now_ms,
+        "schema_version": "1.1",
+        "event_type": "SPEED",
+        "payload": {
+            "speed_kmh": round(random.uniform(0, 120), 1),
+            "acceleration": round(random.uniform(-3, 3), 2),
+        },
+    }
+
+
 def inject_late_event(event: dict) -> dict:
     """Push event_time back to simulate a late-arriving event."""
     delay_sec = random.uniform(
@@ -85,8 +119,8 @@ def send_event(producer, event: dict, label: str = ""):
     ts = datetime.fromtimestamp(event["event_time"] / 1000).strftime("%H:%M:%S")
     now = datetime.now().strftime("%H:%M:%S")
     print(f"[{stats['total_sent']}]{tag} {event['vehicle_id']} | "
-          f"event_time={ts} wall={now} | "
-          f"({event['payload']['latitude']}, {event['payload']['longitude']})")
+          f"type={event['event_type']} version={event['schema_version']} | "
+          f"event_time={ts} wall={now} | payload={event['payload']}")
 
 
 def main():
@@ -107,7 +141,14 @@ def main():
     try:
         while True:
             vehicle_id = random.choice(VEHICLE_IDS)
-            event = create_event(vehicle_id)
+            # Mix event types: 60% LOCATION, 25% BATTERY, 15% SPEED
+            roll = random.random()
+            if roll < 0.60:
+                event = create_event(vehicle_id)
+            elif roll < 0.85:
+                event = create_battery_event(vehicle_id)
+            else:
+                event = create_speed_event(vehicle_id)
             count += 1
 
             # --- Fault: Malformed event ---

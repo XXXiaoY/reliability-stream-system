@@ -3,8 +3,12 @@ package com.vehicletelemetry.model;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import lombok.Data;
+import lombok.NoArgsConstructor;
+
+import java.util.Map;
 
 @Data
+@NoArgsConstructor
 @JsonIgnoreProperties(ignoreUnknown = true)
 public class TelemetryEvent {
 
@@ -27,13 +31,12 @@ public class TelemetryEvent {
     private String eventType;
 
     @JsonProperty("payload")
-    private LocationPayload payload;
+    private Map<String, Object> payload;
 
     @Override
     public String toString() {
-        return String.format("[%s] vehicle=%s type=%s time=%d lat=%.4f lng=%.4f",
-                eventId.substring(0, 8), vehicleId, eventType, eventTime,
-                payload != null ? payload.getLatitude() : 0,
-                payload != null ? payload.getLongitude() : 0);
+        return String.format("[%s] vehicle=%s type=%s version=%s time=%d payload=%s",
+                eventId != null && eventId.length() >= 8 ? eventId.substring(0, 8) : eventId,
+                vehicleId, eventType, schemaVersion, eventTime, payload);
     }
 }
